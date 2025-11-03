@@ -147,19 +147,18 @@ def run():
     # Always check for alert opportunity
     maybe_send_deadline_alert(gw_name, deadline)
 
-    # Only send full digest once per day (at DAILY_DIGEST_HOUR UTC)
-    now = datetime.now(timezone.utc)
-    if now.hour == DAILY_DIGEST_HOUR:
-        watchlist = build_watchlist(elements, teams_map)
-        summary = summarize_players(elements)
-        header = (
-            f"⚽ *Daily FPL Digest: {gw_name}*\n"
-            f"🗓 Deadline: {deadline.astimezone().strftime('%a %d %b %H:%M')}\n"
-            f"──────────────────────"
-        )
-        message = f"{header}\n\n*Watchlist*\n{watchlist}\n{get_team_summary(FPL_TEAM_ID)}\n{summary}"
-        for i in range(0, len(message), 3900):
-            send_telegram_message(message[i:i+3900])
+# Force full digest to send (for testing)
+if True:  # <- changed from: if now.hour == DAILY_DIGEST_HOUR
+    watchlist = build_watchlist(elements, teams_map)
+    summary = summarize_players(elements)
+    header = (
+        f"⚽ *Daily FPL Digest: {gw_name}*\n"
+        f"🗓 Deadline: {deadline.astimezone().strftime('%a %d %b %H:%M')}\n"
+        f"──────────────────────"
+    )
+    message = f"{header}\n\n*Watchlist*\n{watchlist}\n{get_team_summary(FPL_TEAM_ID)}\n{summary}"
+    for i in range(0, len(message), 3900):
+        send_telegram_message(message[i:i+3900])
 
 if __name__ == "__main__":
     run()
