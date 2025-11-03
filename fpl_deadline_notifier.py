@@ -67,6 +67,22 @@ def get_next_deadline(events):
                 continue
     return None, None, None
 
+def get_my_team_picks(team_id):
+    """Fetches the current 15 player element IDs in the user's squad."""
+    if not team_id:
+        return None
+    try:
+        url = f"https://fantasy.premierleague.com/api/my-team/{team_id}/"
+        data = safe_fetch_json(url)
+        if not data or 'picks' not in data:
+            return None
+        
+        # Return a set of element IDs for easy lookup
+        return {pick['element'] for pick in data['picks']}
+    except Exception as e:
+        print(f"ERROR: Failed to fetch user team picks: {e}")
+        return None
+
 # === DATA PROCESSING ===
 def get_team_data_map(teams):
     """
@@ -233,6 +249,101 @@ def get_captaincy_picks(team_data_map, fixtures, current_gw_id):
         
     return "\n".join(lines) + "\n══════════════════════"
 
+def get_personal_analysis(my_picks, elements, teams_map_short):
+    """
+    Analyzes the user's current squad for captaincy and suggests potential transfers.
+    """
+    if not my_picks:
+        return "*Personalized Analysis:* FPL Team ID not set or team data unavailable."
+
+    my_squad = [p for p in elements if p.get("id") in my_picks]
+    
+    if not my_squad:
+        return "*Personalized Analysis:* No players found matching your squad."
+
+    analysis_lines = []
+    
+    # --- 1. Captaincy Suggestion ---
+    
+    # Sort my squad based on the pre-calculated 'form_fixture_score'
+    captaincy_candidates = sorted(my_squad, key=lambda x: x.get("form_fixture_score", 0), reverse=True)
+    
+    captain_text = "*👑 Your Captaincy Suggestion (GW Next):*"
+    if captaincy_candidates:
+        best_candidate = captaincy_candidates[0]
+        team_short = teams_map_short.get(best_candidate.get("team"), '?')
+        score = round(best_candidate.get("form_fixture_score", 0), 2)
+        
+        captain_text += (
+            f"\nYour best pick is *{best_candidate.get('web_name', 'N/A')}* ({team_short})."
+            f"\n  - Metric Score (Form x Fixture): {score}"
+            f"\n  - Next 3 Fixtures: {best_candidate.get('next_fixtures', 'N/A')}"
+        )
+    else:
+        captain_text += "\nNo suitable captain candidates found in your squad."
+    
+    analysis_lines.append(captain_text)
+
+    # --- 2. Transfer Suggestions ---
+
+    # Get the top 3 watchlist players for each position
+    watchlist_by_pos = {}
+    for pos_id, pos_name in POSITION_MAP.items():
+        players_in_pos = [p for p in elements if p.get("element_type") == pos_id]
+        # Calculate watch score as in build_watchlist
+        for p in players_in_pos:
+            p["watch_score"] = (p.get("form_fixture_score", 0) * 2) + p.get("points_per_cost", 0)
+        
+        # Only look at players NOT already in the user's squad for buying suggestions
+        top_watch = sorted([p for p in players_in_pos if p["id"] not in my_picks], 
+                           key=lambda x: x.get("watch_score", 0), reverse=True)[:3]
+        watchlist_by_pos[pos_id] = top_watch
+
+    transfer_suggestions = []
+    
+    # Analyze squad for weakest players
+    for pos_id, pos_name in POSITION_MAP.items():
+        squad_pos = [p for p in my_squad if p.get("element_type") == pos_id]
+        if not squad_pos:
+            continue
+            
+        # Filter for players who have played this season (Total Points > 0)
+        active_squad_pos = [p for p in squad_pos if p.get("total_points", 0) > 0]
+        
+        # Sort by weakest Form/Fixture score (lower score is worse)
+        weakest_players = sorted(active_squad_pos, key=lambda x: x.get("form_fixture_score", 0))
+
+        if weakest_players:
+            player_to_sell = weakest_players[0]
+            sell_score = player_to_sell.get("form_fixture_score", 0)
+            
+            # Compare against the top watchlist player in that position
+            top_buy_candidates = watchlist_by_pos.get(pos_id, [])
+            
+            if top_buy_candidates:
+                player_to_buy = top_buy_candidates[0]
+                buy_score = player_to_buy.get("form_fixture_score", 0)
+                
+                # Suggest a transfer if the potential buy is significantly better (e.g., score difference > 1.0)
+                if buy_score > sell_score + 1.0:
+                    sell_team = teams_map_short.get(player_to_sell.get("team"), '?')
+                    buy_team = teams_map_short.get(player_to_buy.get("team"), '?')
+                    
+                    sell_name = player_to_sell.get('web_name', 'N/A')
+                    buy_name = player_to_buy.get('web_name', 'N/A')
+                    
+                    transfer_suggestions.append(
+                        f"🔄 *{pos_name}:* Sell *{sell_name}* ({sell_team}, Score: {round(sell_score, 2)}) "
+                        f"for *{buy_name}* ({buy_team}, Score: {round(buy_score, 2)})"
+                    )
+
+    transfer_text = "\n*🛒 Transfer Suggestions (Sell Weakest Player):*"
+    transfer_text += "\n" + "\n".join(transfer_suggestions) if transfer_suggestions else "\nYour squad looks well-balanced for the upcoming fixtures! No strong transfer calls."
+
+    analysis_lines.append(transfer_text)
+    
+    return "\n\n".join(analysis_lines) + "\n══════════════════════"
+
 # The original get_player_health_status function is removed as requested.
 
 def summarize_players(elements, teams_map_short):
@@ -389,6 +500,9 @@ def run_daily_digest():
     team_fixture_map = build_fixture_map(fixtures, teams_map_short, gw_id)
     # 3. Enrich players with both FDR (for scoring) and fixture map (for display)
     elements = enrich_players(data.get("elements", []), team_fdr, team_fixture_map)
+    
+    # NEW: Get user's current squad picks
+    my_picks = get_my_team_picks(FPL_TEAM_ID)
 
     # Time calculations
     now = datetime.now(timezone.utc)
@@ -405,16 +519,19 @@ def run_daily_digest():
 
     team_summary = get_team_summary(FPL_TEAM_ID)
     watchlist_text = build_watchlist(elements, teams_map_short)
-    # NEW: Captaincy and transfer picks based on team strength metrics
+    # NEW: Captaincy and transfer picks based on team strength metrics (GENERAL)
     captaincy_picks = get_captaincy_picks(team_data_map, fixtures, gw_id)
+    # NEW: Personalized analysis for the user's squad (CAPTAINCY & TRANSFERS)
+    personal_analysis = get_personal_analysis(my_picks, elements, teams_map_short)
     
     # Returns a list of sections, not a single string
     position_summaries = summarize_players(elements, teams_map_short) 
 
-    # 1. Send Chunk 1 (Header, Team Summary, Captaincy Picks, Watchlist)
+    # 1. Send Chunk 1 (Header, Team Summary, General Picks, Personalized Analysis, Watchlist)
     chunk1 = (
         f"{header}\n{team_summary}\n\n"
         f"{captaincy_picks}\n\n"
+        f"{personal_analysis}\n\n" # <-- Personalized analysis inserted here
         f"*🔥 High-Priority Watchlist (Top 3 by Position)*\n\n"
         f"{watchlist_text}\n"
         f"══════════════════════\n"
