@@ -2,12 +2,16 @@ name: FPL Daily Digest + Deadline Alerts
 
 on:
   schedule:
-    - cron: "0 * * * *"  # every hour
+    # Runs every hour. If you want this to run once a day (e.g., at 08:00 UTC),
+    # change this to: "0 8 * * *"
+    - cron: "0 * * * *" 
   workflow_dispatch:
 
 jobs:
   fpl:
     runs-on: ubuntu-latest
+    # Added timeout for safety
+    timeout-minutes: 5 
 
     steps:
       - name: Checkout repo
@@ -26,6 +30,6 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
           FPL_TEAM_ID: ${{ secrets.FPL_TEAM_ID }}
-          PYTHONIOENCODING: utf-8
+          # Recommended for ensuring proper display of characters/emojis
+          PYTHONIOENCODING: utf-8 
         run: python fpl_deadline_notifier.py
-
