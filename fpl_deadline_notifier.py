@@ -196,7 +196,7 @@ def summarize_players(elements, teams_map):
         )
         summaries.append(section)
 
-    return "\n".join(summaries)
+    return summaries # Return the list of sections instead of a single string
 
 
 def build_watchlist(elements, teams_map):
@@ -302,15 +302,22 @@ def run_daily_digest():
 
     team_summary = get_team_summary(FPL_TEAM_ID)
     watchlist_text = build_watchlist(elements, teams_map)
-    stats = summarize_players(elements, teams_map)
+    # Now returns a list of sections, not a single string
+    position_summaries = summarize_players(elements, teams_map) 
 
-    # Assemble the message chunks
-    chunk1 = f"{header}\n{team_summary}\n\n*🔥 High-Priority Watchlist (Top 3 by Position)*\n\n{watchlist_text}"
-    chunk2 = f"*Detailed Player Statistics*\n{stats}"
-    
-    # Send messages in chunks
+    # 1. Send Chunk 1 (Header, Team Summary, Watchlist)
+    chunk1 = (
+        f"{header}\n{team_summary}\n\n"
+        f"*🔥 High-Priority Watchlist (Top 3 by Position)*\n\n"
+        f"{watchlist_text}\n"
+        f"══════════════════════\n"
+        f"*Detailed Player Statistics will follow in separate messages.*"
+    )
     send_telegram_message(chunk1)
-    send_telegram_message(chunk2)
+
+    # 2. Send Chunk 2+ (Detailed Stats split by position)
+    for section_text in position_summaries:
+        send_telegram_message(section_text)
 
 if __name__ == "__main__":
     run_daily_digest()
