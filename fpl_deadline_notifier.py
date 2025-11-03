@@ -135,6 +135,44 @@ def enrich_players(elements, team_fdr, team_fixture_map):
 
     return elements
 
+def get_player_health_status(elements, teams_map):
+    """
+    Identifies and summarizes players who are injured, suspended, or doubtful.
+    Limits to the top 10 most relevant players with health issues (by total points).
+    """
+    statuses = {'i': 'Injured (Out)', 'd': 'Doubtful', 's': 'Suspended', 'u': 'Unavailable'}
+    # Filter for players whose status is not 'a' (available)
+    health_issues = [p for p in elements if p.get('status') != 'a']
+    
+    if not health_issues:
+        return "*✅ All key players are currently fit!*"
+
+    # Sort by total points to prioritize health status of relevant, highly-owned players
+    health_issues.sort(key=lambda x: x.get('total_points', 0), reverse=True)
+
+    lines = []
+    for p in health_issues[:10]: # Limit to top 10
+        status_key = p.get('status', 'u')
+        status_detail = statuses.get(status_key, 'Unknown')
+        
+        # Add chance of playing for 'Doubtful' status
+        chance = p.get('chance_of_playing_next_round')
+        if chance is not None and chance < 100:
+            status_detail = f"{status_detail} ({chance}%)"
+
+        team_short = teams_map.get(p.get("team"), '?')
+        news = p.get("news") or "No further details."
+        
+        line = (
+            f"⚠️ *{p.get('web_name', 'N/A')}* ({team_short}) — {status_detail}\n"
+            f"   > Details: {news}\n"
+            f"   > Owned by: {p.get('selected_by_percent', '0')}%"
+        )
+        lines.append(line)
+
+    return "\n\n".join(lines)
+
+
 def summarize_players(elements, teams_map):
     summaries = []
     
@@ -302,14 +340,19 @@ def run_daily_digest():
 
     team_summary = get_team_summary(FPL_TEAM_ID)
     watchlist_text = build_watchlist(elements, teams_map)
-    # Now returns a list of sections, not a single string
+    health_report = get_player_health_status(elements, teams_map) # Get new health report
+    
+    # Returns a list of sections, not a single string
     position_summaries = summarize_players(elements, teams_map) 
 
-    # 1. Send Chunk 1 (Header, Team Summary, Watchlist)
+    # 1. Send Chunk 1 (Header, Team Summary, Watchlist, and NEW Health Report)
     chunk1 = (
         f"{header}\n{team_summary}\n\n"
         f"*🔥 High-Priority Watchlist (Top 3 by Position)*\n\n"
-        f"{watchlist_text}\n"
+        f"{watchlist_text}\n\n"
+        f"══════════════════════\n"
+        f"*🏥 Player Health Report (Top 10 Injured/Doubtful)*\n\n"
+        f"{health_report}\n"
         f"══════════════════════\n"
         f"*Detailed Player Statistics will follow in separate messages.*"
     )
