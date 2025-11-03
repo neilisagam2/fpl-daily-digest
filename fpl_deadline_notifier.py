@@ -68,9 +68,23 @@ def get_next_deadline(events):
     return None, None, None
 
 # === DATA PROCESSING ===
-def build_team_map(teams):
-    # Returns id -> short_name mapping
-    return {t["id"]: t.get("short_name", t.get("name", str(t["id"]))) for t in teams}
+def get_team_data_map(teams):
+    """
+    Returns id -> {short_name, attack_strength, defence_strength} mapping.
+    Attack/Defence strength are averaged from home/away FPL strength metrics.
+    """
+    team_data = {}
+    for t in teams:
+        # FPL strength metrics are typically out of 500. We normalize them slightly.
+        avg_attack = (t.get("strength_attack_home", 300) + t.get("strength_attack_away", 300)) / 200
+        avg_defence = (t.get("strength_defence_home", 300) + t.get("strength_defence_away", 300)) / 200
+        
+        team_data[t["id"]] = {
+            "short_name": t.get("short_name", t.get("name", str(t["id"]))),
+            "attack_strength": avg_attack,
+            "defence_strength": avg_defence
+        }
+    return team_data
 
 def calculate_fixture_difficulty(fixtures, teams):
     # Build mapping team_id -> list of upcoming difficulties and return FDR score
@@ -87,9 +101,9 @@ def calculate_fixture_difficulty(fixtures, teams):
         team_fdr[team_id] = avg_diff
     return team_fdr
 
-def build_fixture_map(fixtures, teams_map, current_gw_id):
+def build_fixture_map(fixtures, teams_map_short, current_gw_id):
     """Returns a map of team_id -> list of next 3 fixture strings (Team Name (Difficulty))"""
-    team_fixtures = {t_id: [] for t_id in teams_map.keys()}
+    team_fixtures = {t_id: [] for t_id in teams_map_short.keys()}
     
     # Filter for fixtures in the next 3 gameweeks after the current one
     # Note: We filter by GW ID > current GW ID
@@ -97,12 +111,12 @@ def build_fixture_map(fixtures, teams_map, current_gw_id):
 
     for f in relevant_fixtures:
         # Determine opponent and difficulty for Home team
-        opp_a = teams_map.get(f["team_a"], '?')
+        opp_a = teams_map_short.get(f["team_a"], '?')
         diff_h = f.get("team_h_difficulty", 3)
         fixture_h_str = f"{opp_a}({diff_h})"
         
         # Determine opponent and difficulty for Away team
-        opp_h = teams_map.get(f["team_h"], '?')
+        opp_h = teams_map_short.get(f["team_h"], '?')
         diff_a = f.get("team_a_difficulty", 3)
         fixture_a_str = f"{opp_h}({diff_a})"
 
@@ -135,45 +149,93 @@ def enrich_players(elements, team_fdr, team_fixture_map):
 
     return elements
 
-def get_player_health_status(elements, teams_map):
+def get_captaincy_picks(team_data_map, fixtures, current_gw_id):
     """
-    Identifies and summarizes players who are injured, suspended, or doubtful.
-    Limits to the top 10 most relevant players with health issues (by total points).
+    Analyzes the next gameweek fixtures based on FPL's team strength metrics
+    to suggest captaincy candidates for attacking and defensive returns.
     """
-    statuses = {'i': 'Injured (Out)', 'd': 'Doubtful', 's': 'Suspended', 'u': 'Unavailable'}
-    # Filter for players whose status is not 'a' (available)
-    health_issues = [p for p in elements if p.get('status') != 'a']
+    next_gw_id = current_gw_id + 1
+    next_fixtures = [f for f in fixtures if f.get("event") == next_gw_id]
+
+    attacking_candidates = []
+    defensive_candidates = []
     
-    if not health_issues:
-        return "*✅ All key players are currently fit!*"
-
-    # Sort by total points to prioritize health status of relevant, highly-owned players
-    health_issues.sort(key=lambda x: x.get('total_points', 0), reverse=True)
-
-    lines = []
-    for p in health_issues[:10]: # Limit to top 10
-        status_key = p.get('status', 'u')
-        status_detail = statuses.get(status_key, 'Unknown')
+    for f in next_fixtures:
+        team_h_id = f["team_h"]
+        team_a_id = f["team_a"]
         
-        # Add chance of playing for 'Doubtful' status
-        chance = p.get('chance_of_playing_next_round')
-        if chance is not None and chance < 100:
-            status_detail = f"{status_detail} ({chance}%)"
+        team_h = team_data_map.get(team_h_id)
+        team_a = team_data_map.get(team_a_id)
 
-        team_short = teams_map.get(p.get("team"), '?')
-        news = p.get("news") or "No further details."
+        if not team_h or not team_a:
+            continue
+
+        # --- Attacking Potential ---
+        # Attacking Score for Team H: H Attack Strength + (6 - A Defence Strength)
+        score_h_att = team_h["attack_strength"] + (6 - team_a["defence_strength"])
+        attacking_candidates.append({
+            "team_id": team_h_id,
+            "opponent_id": team_a_id,
+            "score": score_h_att,
+            "type": "Attacking",
+            "venue": "(H)"
+        })
         
-        line = (
-            f"⚠️ *{p.get('web_name', 'N/A')}* ({team_short}) — {status_detail}\n"
-            f"   > Details: {news}\n"
-            f"   > Owned by: {p.get('selected_by_percent', '0')}%"
-        )
-        lines.append(line)
+        # Attacking Score for Team A: A Attack Strength + (6 - H Defence Strength)
+        score_a_att = team_a["attack_strength"] + (6 - team_h["defence_strength"])
+        attacking_candidates.append({
+            "team_id": team_a_id,
+            "opponent_id": team_h_id,
+            "score": score_a_att,
+            "type": "Attacking",
+            "venue": "(A)"
+        })
 
-    return "\n\n".join(lines)
+        # --- Defensive Potential ---
+        # Defensive Score for Team H: H Defence Strength + (6 - A Attack Strength)
+        score_h_def = team_h["defence_strength"] + (6 - team_a["attack_strength"])
+        defensive_candidates.append({
+            "team_id": team_h_id,
+            "opponent_id": team_a_id,
+            "score": score_h_def,
+            "type": "Defensive",
+            "venue": "(H)"
+        })
+
+        # Defensive Score for Team A: A Defence Strength + (6 - H Attack Strength)
+        score_a_def = team_a["defence_strength"] + (6 - team_h["attack_strength"])
+        defensive_candidates.append({
+            "team_id": team_a_id,
+            "opponent_id": team_h_id,
+            "score": score_a_def,
+            "type": "Defensive",
+            "venue": "(A)"
+        })
 
 
-def summarize_players(elements, teams_map):
+    # Sort and pick top 3
+    top_attack = sorted(attacking_candidates, key=lambda x: x["score"], reverse=True)[:3]
+    top_defence = sorted(defensive_candidates, key=lambda x: x["score"], reverse=True)[:3]
+
+    lines = [f"*🎯 Captaincy & Transfer Targets (GW {next_gw_id})*\n"]
+    
+    lines.append("*Top 3 Attacking Fixtures (Goals/Assists potential):*")
+    for i, c in enumerate(top_attack):
+        team_name = team_data_map[c["team_id"]]["short_name"]
+        opp_name = team_data_map[c["opponent_id"]]["short_name"]
+        lines.append(f"{i+1}. {team_name} {c['venue']} vs {opp_name} (Score: {round(c['score'], 2)})")
+
+    lines.append("\n*Top 3 Defensive Fixtures (Clean Sheet potential):*")
+    for i, c in enumerate(top_defence):
+        team_name = team_data_map[c["team_id"]]["short_name"]
+        opp_name = team_data_map[c["opponent_id"]]["short_name"]
+        lines.append(f"{i+1}. {team_name} {c['venue']} vs {opp_name} (Score: {round(c['score'], 2)})")
+        
+    return "\n".join(lines) + "\n══════════════════════"
+
+# The original get_player_health_status function is removed as requested.
+
+def summarize_players(elements, teams_map_short):
     summaries = []
     
     # Enhanced formatting function
@@ -187,7 +249,7 @@ def summarize_players(elements, teams_map):
             val = p.get(metric, 0)
             val_str = str(round(val, round_digits)) if isinstance(val, (float, int)) else str(val)
             
-            team_short = teams_map.get(p.get("team"), '?')
+            team_short = teams_map_short.get(p.get("team"), '?')
             total_points = p.get('total_points', 0) # Fetched total points
             
             # Player line: Rank. Name (Team) (Metric Score) (Pts: Total Points) [Fixtures]
@@ -237,7 +299,7 @@ def summarize_players(elements, teams_map):
     return summaries # Return the list of sections instead of a single string
 
 
-def build_watchlist(elements, teams_map):
+def build_watchlist(elements, teams_map_short):
     # watch_score = (form_fixture_score * 2) + points_per_cost
     watch_sections = []
     
@@ -251,7 +313,7 @@ def build_watchlist(elements, teams_map):
         
         lines = []
         for i, p in enumerate(top_watch):
-            team_short = teams_map.get(p.get("team"), '?')
+            team_short = teams_map_short.get(p.get("team"), '?')
             price = (p.get("now_cost", 0) / 10)
             form = round(p.get("form_value", 0), 2)
             fdr = p.get("fixture_difficulty", 3.0)
@@ -316,12 +378,15 @@ def run_daily_digest():
         return
 
     teams = data.get("teams", [])
-    teams_map = build_team_map(teams)
+    # NEW: Get richer team data map including attack/defense strengths
+    team_data_map = get_team_data_map(teams)
+    # Derive the simple short-name map for functions that only need the name
+    teams_map_short = {t_id: d["short_name"] for t_id, d in team_data_map.items()}
     
     # 1. Calculate FDR (Average difficulty of next 3 *fixtures*)
     team_fdr = calculate_fixture_difficulty(fixtures, teams)
     # 2. Build detailed fixture map (Opponent and difficulty strings)
-    team_fixture_map = build_fixture_map(fixtures, teams_map, gw_id)
+    team_fixture_map = build_fixture_map(fixtures, teams_map_short, gw_id)
     # 3. Enrich players with both FDR (for scoring) and fixture map (for display)
     elements = enrich_players(data.get("elements", []), team_fdr, team_fixture_map)
 
@@ -339,20 +404,19 @@ def run_daily_digest():
     )
 
     team_summary = get_team_summary(FPL_TEAM_ID)
-    watchlist_text = build_watchlist(elements, teams_map)
-    health_report = get_player_health_status(elements, teams_map) # Get new health report
+    watchlist_text = build_watchlist(elements, teams_map_short)
+    # NEW: Captaincy and transfer picks based on team strength metrics
+    captaincy_picks = get_captaincy_picks(team_data_map, fixtures, gw_id)
     
     # Returns a list of sections, not a single string
-    position_summaries = summarize_players(elements, teams_map) 
+    position_summaries = summarize_players(elements, teams_map_short) 
 
-    # 1. Send Chunk 1 (Header, Team Summary, Watchlist, and NEW Health Report)
+    # 1. Send Chunk 1 (Header, Team Summary, Captaincy Picks, Watchlist)
     chunk1 = (
         f"{header}\n{team_summary}\n\n"
+        f"{captaincy_picks}\n\n"
         f"*🔥 High-Priority Watchlist (Top 3 by Position)*\n\n"
-        f"{watchlist_text}\n\n"
-        f"══════════════════════\n"
-        f"*🏥 Player Health Report (Top 10 Injured/Doubtful)*\n\n"
-        f"{health_report}\n"
+        f"{watchlist_text}\n"
         f"══════════════════════\n"
         f"*Detailed Player Statistics will follow in separate messages.*"
     )
