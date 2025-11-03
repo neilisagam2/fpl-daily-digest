@@ -160,5 +160,9 @@ if True:  # <- changed from: if now.hour == DAILY_DIGEST_HOUR
     for i in range(0, len(message), 3900):
         send_telegram_message(message[i:i+3900])
 
+print("DEBUG: Script started")
+print(f"Next Gameweek: {gw_name}, deadline: {deadline}")
+print(f"Telegram Chat ID: {CHAT_ID}, Token present: {TELEGRAM_TOKEN is not None}")
+
 if __name__ == "__main__":
     run()
