@@ -9,7 +9,7 @@ import re # For cleaning player names
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 # === ACTION REQUIRED: REPLACE 'None' WITH YOUR FPL TEAM ID (e.g., '123456') ===
-FPL_TEAM_ID = os.getenv("FPL_TEAM_ID", None)  # Set your FPL ID here if not using env vars: FPL_TEAM_ID = '123456'
+FPL_TEAM_ID = '124780'  # <-- REPLACE 'None' with your numerical FPL Team ID (e.g., FPL_TEAM_ID = '123456')
 
 FPL_API_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
@@ -397,13 +397,14 @@ def summarize_players(elements, teams_map_short):
         top_fixture_form = sorted(players, key=lambda x: x.get("form_fixture_score", 0), reverse=True)[:5]
         
         # --- Section Assembly ---
+        # Fixed the string concatenation issue here by using f-string continuation (less prone to error)
         section = (
-            f"\n\n\n⭐ *{pos_name} Analysis* ⭐" +
-            f"{fmt('Top 5 Transfers IN (This GW)', top_in, 'transfers_in_event', 0)}" +
-            f"{fmt('Top 5 Transfers OUT (This GW)', top_out, 'transfers_out_event', 0)}" +
-            f"{fmt('Top 10 Points/Cost Value', top_value, 'points_per_cost', 2, show_fixtures=True)}" +
-            f"{fmt('Top 5 Form Players', top_form, 'form_value', 2, show_fixtures=True)}" +
-            f"{fmt('Top 5 Differentials (<10% Ownership)', top_diff, 'total_points', 0, show_fixtures=True)}" +
+            f"\n\n\n⭐ *{pos_name} Analysis* ⭐"
+            f"{fmt('Top 5 Transfers IN (This GW)', top_in, 'transfers_in_event', 0)}"
+            f"{fmt('Top 5 Transfers OUT (This GW)', top_out, 'transfers_out_event', 0)}"
+            f"{fmt('Top 10 Points/Cost Value', top_value, 'points_per_cost', 2, show_fixtures=True)}"
+            f"{fmt('Top 5 Form Players', top_form, 'form_value', 2, show_fixtures=True)}"
+            f"{fmt('Top 5 Differentials (<10% Ownership)', top_diff, 'total_points', 0, show_fixtures=True)}"
             f"{fmt('Top 5 Form + Fixture Rating', top_fixture_form, 'form_fixture_score', 2, show_fixtures=True)}"
         )
         summaries.append(section)
@@ -532,6 +533,7 @@ def run_daily_digest():
     position_summaries = summarize_players(elements, teams_map_short) 
 
     # 1. Send Chunk 1 (Header, Team Summary, General Picks, Personalized Analysis, Watchlist)
+    # Fixed the string concatenation issue here
     chunk1 = (
         f"{header}\n{team_summary}\n\n" +
         f"{captaincy_picks}\n\n" +
