@@ -75,21 +75,13 @@ def get_my_team_picks(team_id):
     try:
         url = f"https://fantasy.premierleague.com/api/my-team/{team_id}/"
         data = safe_fetch_json(url)
-        
-        # Check 1: Did the fetch completely fail?
-        if not data:
-            print(f"DEBUG: FAILED to get squad data from {url}. FPL API may be temporarily down or slow.")
-            return None
-        
-        # Check 2: Was the 'picks' key present and non-empty?
-        if 'picks' not in data or not data['picks']:
-            print(f"DEBUG: Successfully fetched team data for {team_id}, but 'picks' list was MISSING or empty. This may indicate a temporary FPL API issue or a blank squad.")
+        if not data or 'picks' not in data:
             return None
         
         # Return a set of element IDs for easy lookup
         return {pick['element'] for pick in data['picks']}
     except Exception as e:
-        print(f"ERROR: Failed to fetch user team picks (full error): {e}")
+        print(f"ERROR: Failed to fetch user team picks: {e}")
         return None
 
 # === DATA PROCESSING ===
@@ -263,8 +255,7 @@ def get_personal_analysis(my_picks, elements, teams_map_short):
     Analyzes the user's current squad for captaincy and suggests potential transfers.
     """
     if not my_picks:
-        # NOTE: This message is triggered when get_my_team_picks fails to return the squad list.
-        return "*Personalized Analysis:* Could not retrieve your current FPL squad (API access issue). Try again later."
+        return "*Personalized Analysis:* FPL Team ID not set or team data unavailable."
 
     my_squad = [p for p in elements if p.get("id") in my_picks]
     
@@ -407,9 +398,154 @@ def summarize_players(elements, teams_map_short):
         
         # --- Section Assembly ---
         section = (
-            f"\n\n\n⭐ *{pos_name} Analysis* ⭐"
-            f"{fmt('Top 5 Transfers IN (This GW)', top_in, 'transfers_in_event', 0)}"
-            f"{fmt('Top 5 Transfers OUT (This GW)', top_out, 'transfers_out_event', 0)}"
-            f"{fmt('Top 10 Points/Cost Value', top_value, 'points_per_cost', 2, show_fixtures=True)}"
-            f"{fmt('Top 5 Form Players', top_form, 'form_value', 2, show_fixtures=True)}"
-            f"{fmt
+            f"\n\n\n⭐ *{pos_name} Analysis* ⭐" +
+            f"{fmt('Top 5 Transfers IN (This GW)', top_in, 'transfers_in_event', 0)}" +
+            f"{fmt('Top 5 Transfers OUT (This GW)', top_out, 'transfers_out_event', 0)}" +
+            f"{fmt('Top 10 Points/Cost Value', top_value, 'points_per_cost', 2, show_fixtures=True)}" +
+            f"{fmt('Top 5 Form Players', top_form, 'form_value', 2, show_fixtures=True)}" +
+            f"{fmt('Top 5 Differentials (<10% Ownership)', top_diff, 'total_points', 0, show_fixtures=True)}" +
+            f"{fmt('Top 5 Form + Fixture Rating', top_fixture_form, 'form_fixture_score', 2, show_fixtures=True)}"
+        )
+        summaries.append(section)
+
+    return summaries # Return the list of sections instead of a single string
+
+
+def build_watchlist(elements, teams_map_short):
+    # watch_score = (form_fixture_score * 2) + points_per_cost
+    watch_sections = []
+    
+    for pos_id, pos_name in POSITION_MAP.items():
+        players = [p for p in elements if p.get("element_type") == pos_id]
+        
+        for p in players:
+            p["watch_score"] = (p.get("form_fixture_score", 0) * 2) + p.get("points_per_cost", 0)
+
+        top_watch = sorted(players, key=lambda x: x.get("watch_score", 0), reverse=True)[:3] # Changed to top 3 for more options
+        
+        lines = []
+        for i, p in enumerate(top_watch):
+            team_short = teams_map_short.get(p.get("team"), '?')
+            price = (p.get("now_cost", 0) / 10)
+            form = round(p.get("form_value", 0), 2)
+            fdr = p.get("fixture_difficulty", 3.0)
+            owned = p.get("selected_by_percent", "0")
+            
+            # Combine stats into a more compact line
+            lines.append(
+                f"{i+1}. *{p.get('web_name', 'N/A')}* ({team_short}) — £{price} "
+                f"(Own:{owned}% | Form:{form} | FDR:{fdr})"
+            )
+            # Add fixtures on a separate, indented line for readability
+            lines.append(f"   > Next 3: {p.get('next_fixtures', 'N/A')}")
+
+        watch_text = "\n".join(lines) if lines else "None"
+        watch_sections.append(f"*{pos_name}:*\n{watch_text}")
+        
+    return "\n\n".join(watch_sections)
+
+
+def get_team_summary(team_id):
+    if not team_id:
+        return ""
+    try:
+        url = f"https://fantasy.premierleague.com/api/entry/{team_id}/"
+        data = safe_fetch_json(url)
+        if not data:
+            raise Exception("No team data received.")
+
+        name = data.get("name", "N/A")
+        player_name = f"{data.get('player_first_name', '')} {data.get('player_last_name', '')}".strip()
+        rank = data.get("summary_overall_rank", "N/A")
+        points = data.get("summary_overall_points", "N/A")
+        transfers = data.get("last_deadline_total_transfers", "N/A")
+        
+        return (
+            f"\n\n*👤 Your Team: {name} ({player_name})*\n"
+            f"📈 *Overall Rank:* {rank}\n"
+            f"📊 *Total Points:* {points}\n"
+            f"🔄 *Last GW Transfers:* {transfers}\n"
+            "══════════════════════"
+        )
+    except Exception:
+        return "\n\n*Could not fetch your team summary.*\n══════════════════════"
+
+
+# === MAIN DIGEST ===
+def run_daily_digest():
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("ERROR: TELEGRAM_TOKEN or CHAT_ID is not set. Cannot send digest.")
+        sys.exit(1)
+
+    # Convert FPL_TEAM_ID to string if it was set directly to an integer
+    fpl_team_id_str = str(FPL_TEAM_ID) if FPL_TEAM_ID is not None else None
+
+    data = get_fpl_data()
+    fixtures = get_fixtures()
+
+    if not data or not fixtures:
+        print("ERROR: Essential FPL data not available. Exiting.")
+        return
+
+    gw_name, gw_id, deadline = get_next_deadline(data.get("events", []))
+    if not deadline:
+        print("INFO: Could not find next GW deadline. Perhaps the season is over?")
+        return
+
+    teams = data.get("teams", [])
+    # NEW: Get richer team data map including attack/defense strengths
+    team_data_map = get_team_data_map(teams)
+    # Derive the simple short-name map for functions that only need the name
+    teams_map_short = {t_id: d["short_name"] for t_id, d in team_data_map.items()}
+    
+    # 1. Calculate FDR (Average difficulty of next 3 *fixtures*)
+    team_fdr = calculate_fixture_difficulty(fixtures, teams)
+    # 2. Build detailed fixture map (Opponent and difficulty strings)
+    team_fixture_map = build_fixture_map(fixtures, teams_map_short, gw_id)
+    # 3. Enrich players with both FDR (for scoring) and fixture map (for display)
+    elements = enrich_players(data.get("elements", []), team_fdr, team_fixture_map)
+    
+    # NEW: Get user's current squad picks
+    my_picks = get_my_team_picks(fpl_team_id_str)
+
+    # Time calculations
+    now = datetime.now(timezone.utc)
+    diff = deadline - now
+    days = diff.days
+    hours = (diff.seconds // 3600)
+
+    header = (
+        f"⚽ *FPL Daily Digest: {gw_name}*\n"
+        f"🚨 *DEADLINE:* {deadline.astimezone().strftime('%a %d %b %H:%M %Z')}\n"
+        f"⏳ *Time Remaining:* {days}d {hours}h\n"
+        "══════════════════════"
+    )
+
+    team_summary = get_team_summary(fpl_team_id_str)
+    watchlist_text = build_watchlist(elements, teams_map_short)
+    # NEW: Captaincy and transfer picks based on team strength metrics (GENERAL)
+    captaincy_picks = get_captaincy_picks(team_data_map, fixtures, gw_id)
+    # NEW: Personalized analysis for the user's squad (CAPTAINCY & TRANSFERS)
+    personal_analysis = get_personal_analysis(my_picks, elements, teams_map_short)
+    
+    # Returns a list of sections, not a single string
+    position_summaries = summarize_players(elements, teams_map_short) 
+
+    # 1. Send Chunk 1 (Header, Team Summary, General Picks, Personalized Analysis, Watchlist)
+    chunk1 = (
+        f"{header}\n{team_summary}\n\n" +
+        f"{captaincy_picks}\n\n" +
+        f"{personal_analysis}\n\n" + # <-- Personalized analysis inserted here
+        f"*🔥 High-Priority Watchlist (Top 3 by Position)*\n\n" +
+        f"{watchlist_text}\n" +
+        f"══════════════════════\n" +
+        f"*Detailed Player Statistics will follow in separate messages.*"
+    )
+    send_telegram_message(chunk1)
+
+    # 2. Send Chunk 2+ (Detailed Stats split by position)
+    for section_text in position_summaries:
+        send_telegram_message(section_text)
+
+if __name__ == "__main__":
+    run_daily_digest()
