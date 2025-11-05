@@ -122,9 +122,9 @@ def build_fixture_map(fixtures, teams_map_short, current_gw_id):
     """Returns a map of team_id -> list of next 3 fixture strings (Team Name (Difficulty))"""
     team_fixtures = {t_id: [] for t_id in teams_map_short.keys()}
     
-    # Filter for fixtures in the next 3 gameweeks after the current one
-    # Note: We filter by GW ID > current GW ID
-    relevant_fixtures = sorted([f for f in fixtures if f.get("event") and f["event"] > current_gw_id and not f.get("finished", False)], key=lambda x: x["event"])
+    # FIX: Filter for all UNPLAYED fixtures, starting from the current Gameweek onwards.
+    # The previous logic incorrectly filtered out the current gameweek's fixtures.
+    relevant_fixtures = sorted([f for f in fixtures if not f.get("finished", False) and f.get("event")], key=lambda x: x["event"])
 
     for f in relevant_fixtures:
         # Determine opponent and difficulty for Home team
@@ -137,7 +137,7 @@ def build_fixture_map(fixtures, teams_map_short, current_gw_id):
         diff_a = f.get("team_a_difficulty", 3)
         fixture_a_str = f"{opp_h}({diff_a})"
 
-        # Append if less than 3 fixtures have been added
+        # Append only if less than 3 fixtures have been added for that team
         if len(team_fixtures[f["team_h"]]) < 3:
             team_fixtures[f["team_h"]].append(fixture_h_str)
         if len(team_fixtures[f["team_a"]]) < 3:
@@ -172,7 +172,8 @@ def get_captaincy_picks(team_data_map, fixtures, current_gw_id):
     to suggest captaincy candidates for attacking and defensive returns.
     """
     next_gw_id = current_gw_id + 1
-    next_fixtures = [f for f in fixtures if f.get("event") == next_gw_id]
+    # NOTE: Since get_next_deadline returns the ID of the UPCOMING GW, we use that ID.
+    next_fixtures = [f for f in fixtures if f.get("event") == current_gw_id] 
 
     attacking_candidates = []
     defensive_candidates = []
@@ -234,7 +235,7 @@ def get_captaincy_picks(team_data_map, fixtures, current_gw_id):
     top_attack = sorted(attacking_candidates, key=lambda x: x["score"], reverse=True)[:3]
     top_defence = sorted(defensive_candidates, key=lambda x: x["score"], reverse=True)[:3]
 
-    lines = [f"*🎯 Captaincy & Transfer Targets (GW {next_gw_id})*\n"]
+    lines = [f"*🎯 Captaincy & Transfer Targets (GW {current_gw_id})*\n"]
     
     lines.append("*Top 3 Attacking Fixtures (Goals/Assists potential):*")
     for i, c in enumerate(top_attack):
@@ -496,12 +497,12 @@ def run_daily_digest():
     teams = data.get("teams", [])
     # NEW: Get richer team data map including attack/defense strengths
     team_data_map = get_team_data_map(teams)
-    # Derive the simple short-name map for functions that only need the name
+    # Derive the simple short-name map for functions that only needs the name
     teams_map_short = {t_id: d["short_name"] for t_id, d in team_data_map.items()}
     
     # 1. Calculate FDR (Average difficulty of next 3 *fixtures*)
     team_fdr = calculate_fixture_difficulty(fixtures, teams)
-    # 2. Build detailed fixture map (Opponent and difficulty strings)
+    # 2. Build detailed fixture map (Opponent and difficulty strings) - NOW FIXED TO INCLUDE CURRENT GW
     team_fixture_map = build_fixture_map(fixtures, teams_map_short, gw_id)
     # 3. Enrich players with both FDR (for scoring) and fixture map (for display)
     elements = enrich_players(data.get("elements", []), team_fdr, team_fixture_map)
@@ -525,6 +526,7 @@ def run_daily_digest():
     team_summary = get_team_summary(fpl_team_id_str)
     watchlist_text = build_watchlist(elements, teams_map_short)
     # NEW: Captaincy and transfer picks based on team strength metrics (GENERAL)
+    # The current_gw_id passed here is the ID of the UPCOMING Gameweek
     captaincy_picks = get_captaincy_picks(team_data_map, fixtures, gw_id)
     # NEW: Personalized analysis for the user's squad (CAPTAINCY & TRANSFERS)
     personal_analysis = get_personal_analysis(my_picks, elements, teams_map_short)
